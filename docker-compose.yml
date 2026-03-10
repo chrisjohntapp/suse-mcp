@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  suse-mcp-server:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: suse-mcp-server
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
