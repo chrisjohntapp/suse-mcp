@@ -60,3 +60,9 @@ htmlcov/
 
 # Git worktrees
 .worktrees/
+
+# Local secrets
+.env
+.claude/
+opencode.json
+docs/plan-*.md

@@ -814,11 +814,6 @@ async def list_tools() -> list[Tool]:
                     "package_name": {
                         "type": "string",
                         "description": "Name of the package to verify"
-                    },
-                    "thorough": {
-                        "type": "boolean",
-                        "description": "Perform thorough check including file attributes. Default: false",
-                        "default": False
                     }
                 },
                 "required": ["package_name"]
@@ -1163,8 +1158,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             return [TextContent(type="text", text=create_platform_error_message("verify_package_integrity"))]
 
         package_name = arguments["package_name"]
-        thorough = arguments.get("thorough", False)
-        result = await verify_package_integrity(package_name, thorough)
+        result = await verify_package_integrity(package_name)
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     # Package Groups

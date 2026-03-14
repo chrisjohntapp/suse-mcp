@@ -55,7 +55,7 @@ async def get_latest_news(
     logger.info(f"Fetching latest openSUSE news (limit={limit})")
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.get(OPENSUSE_NEWS_URL)
             response.raise_for_status()
 
