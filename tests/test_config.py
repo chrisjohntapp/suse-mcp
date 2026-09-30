@@ -204,3 +204,86 @@ class TestParseZypperLocks:
         output = "# | Name | Type | Repository\n--+------+------+------------\n"
         locks = _parse_zypper_locks(output)
         assert locks == []
+
+
+class TestSuseLayoutFallbacks:
+    """openSUSE/SUSE does not use the Fedora paths this module originally assumed.
+
+    - zypper.conf lives at /etc/zypp/zypper.conf (owned by the zypper package), not
+      /etc/zypper/zypper.conf.
+    - /etc/rpm/macros is an empty directory; the real macros are in
+      /usr/lib/rpm/macros (single file), /usr/lib/rpm/macros.d/ (a directory) and
+      /usr/lib/rpm/platform/<triplet>/macros.
+    """
+
+    @pytest.mark.asyncio
+    @patch("suse_ops_server.config.IS_SUSE", True)
+    async def test_zypper_conf_falls_back_to_suse_path(self, tmp_path):
+        suse_conf = tmp_path / "zypp" / "zypper.conf"
+        suse_conf.parent.mkdir(parents=True)
+        suse_conf.write_text(SAMPLE_ZYPPER_CONF)
+        missing = tmp_path / "zypper" / "zypper.conf"
+        with patch("suse_ops_server.config.ZYPPER_CONF", str(missing)), \
+             patch("suse_ops_server.config.ZYPPER_CONF_ALTERNATIVES", [str(missing.parent / "zypper.conf"), str(suse_conf)]):
+            result = await analyze_zypper_conf()
+            assert result["config_path"] == str(suse_conf)
+            assert result["options"]["main.gpgcheck"] == "1"
+            assert result["sig_level"] == "1"
+
+    @pytest.mark.asyncio
+    @patch("suse_ops_server.config.IS_SUSE", True)
+    async def test_macro_directory_is_merged(self, tmp_path):
+        macro_dir = tmp_path / "macros.d"
+        macro_dir.mkdir()
+        (macro_dir / "macros.opensuse").write_text("%_target_cpu aarch64\n")
+        (macro_dir / "macros.perl").write_text("%__perl /usr/bin/perl\n")
+        with patch("suse_ops_server.config.RPM_MACROS", str(macro_dir)):
+            result = await analyze_rpm_macros()
+            assert result["config_path"] == str(macro_dir)
+            assert result["files_parsed"] == 2
+            assert result["macros"]["%_target_cpu"] == "aarch64"
+            assert result["macros"]["%__perl"] == "/usr/bin/perl"
+
+    @pytest.mark.asyncio
+    @patch("suse_ops_server.config.IS_SUSE", True)
+    async def test_macro_file_and_directory_are_merged(self, tmp_path):
+        legacy = tmp_path / "macros"
+        legacy.write_text("%_usr /usr\n")
+        macro_dir = tmp_path / "macros.d"
+        macro_dir.mkdir()
+        (macro_dir / "macros.arch").write_text("%_arch aarch64\n")
+        empty_platform_root = tmp_path / "no-platform"
+        empty_platform_root.mkdir()
+        with patch("suse_ops_server.config.RPM_MACROS", str(legacy)), \
+             patch("suse_ops_server.config.RPM_MACROS_DEFAULT", str(legacy)), \
+             patch("suse_ops_server.config.RPM_MACRO_ALTERNATIVES", [str(macro_dir)]), \
+             patch("suse_ops_server.config.RPM_MACRO_PLATFORM_ROOT", str(empty_platform_root)):
+            result = await analyze_rpm_macros()
+            assert result["files_parsed"] == 2
+            assert result["macros"]["%_usr"] == "/usr"
+            assert result["build_arch"] == "aarch64"
+
+    @pytest.mark.asyncio
+    @patch("suse_ops_server.config.IS_SUSE", True)
+    async def test_only_host_platform_macros_are_used(self, tmp_path):
+        """Scanning every platform dir would report another architecture's %_arch."""
+        platform_root = tmp_path / "platform"
+        (platform_root / "aarch64-linux").mkdir(parents=True)
+        (platform_root / "aarch64-linux" / "macros").write_text("%_arch aarch64\n")
+        (platform_root / "x86_64-linux").mkdir()
+        (platform_root / "x86_64-linux" / "macros").write_text("%_arch x86_64\n")
+        legacy = tmp_path / "macros"
+        legacy.write_text("%_vendor suse\n")
+
+        async def fake_run_command(cmd, timeout=10, check=True, skip_sudo_check=False):
+            assert cmd[:2] == ["rpm", "--eval"]
+            return 0, "aarch64\n", ""
+
+        with patch("suse_ops_server.config.RPM_MACROS", str(legacy)), \
+             patch("suse_ops_server.config.RPM_MACROS_DEFAULT", str(legacy)), \
+             patch("suse_ops_server.config.RPM_MACRO_ALTERNATIVES", [str(legacy)]), \
+             patch("suse_ops_server.config.RPM_MACRO_PLATFORM_ROOT", str(platform_root)), \
+             patch("suse_ops_server.config.run_command", fake_run_command):
+            result = await analyze_rpm_macros()
+            assert result["build_arch"] == "aarch64"
+            assert str(platform_root / "x86_64-linux" / "macros") not in result["sources"]

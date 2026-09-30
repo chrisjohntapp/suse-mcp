@@ -43,6 +43,9 @@ from . import (
     list_explicit_packages,
     manage_orphans,
     query_file_ownership,
+    find_package_owner,
+    list_package_files,
+    search_package_files,
     verify_package_integrity,
     manage_install_reason,
     check_database_freshness,
@@ -1127,7 +1130,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         packages = arguments["packages"]
         remove_dependencies = arguments.get("remove_dependencies", False)
         force = arguments.get("force", False)
-        result = await remove_packages(packages, remove_dependencies, force)
+        result = await remove_packages(packages, orphan_check=remove_dependencies, cascade=force)
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     # Orphan Package Management
@@ -1138,7 +1141,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         action = arguments["action"]
         dry_run = arguments.get("dry_run", True)
         exclude = arguments.get("exclude", None)
-        result = await manage_orphans(action, dry_run, exclude)
+        result = await manage_orphans(action, packages=exclude, dry_run=dry_run)
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     # File Ownership Query
@@ -1149,7 +1152,24 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         query = arguments["query"]
         mode = arguments["mode"]
         filter_pattern = arguments.get("filter_pattern", None)
-        result = await query_file_ownership(query, mode, filter_pattern)
+        if mode == "file_to_package":
+            result = await find_package_owner(query)
+        elif mode == "package_to_files":
+            result = await list_package_files(query)
+            if filter_pattern and not result.get("error"):
+                import re as _re
+
+                pattern = _re.compile(filter_pattern.replace("*", ".*"))
+                if isinstance(result.get("files"), list):
+                    result["files"] = [f for f in result["files"] if pattern.search(f)]
+        elif mode == "filename_search":
+            result = await search_package_files(query)
+        else:
+            result = {
+                "error": True,
+                "type": "InvalidMode",
+                "message": f"Unknown mode '{mode}'. Use file_to_package, package_to_files or filename_search.",
+            }
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     # Package Verification
@@ -1178,7 +1198,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
 
         action = arguments["action"]
         package_name = arguments.get("package_name", None)
-        result = await manage_install_reason(action, package_name)
+        if action == "list":
+            result = await list_explicit_packages()
+        else:
+            if not package_name:
+                result = {
+                    "error": True,
+                    "type": "MissingParameter",
+                    "message": f"action '{action}' requires package_name",
+                }
+            else:
+                result = await manage_install_reason(package_name, action)
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     # System Diagnostic Tools
@@ -1210,10 +1240,23 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         if not IS_SUSE:
             return [TextContent(type="text", text=create_platform_error_message("query_package_history"))]
         
-        query_type = arguments.get("query_type")
+        query_type = arguments.get("query_type") or "package"
         package_name = arguments.get("package_name")
         limit = arguments.get("limit", 50)
-        result = await query_package_history(query_type=query_type, package_name=package_name, limit=limit)
+        if query_type in ("failures", "sync"):
+            result = {
+                "error": True,
+                "type": "NotSupported",
+                "message": f"query_type '{query_type}' is not implemented; use 'all' or 'package'",
+            }
+        elif query_type == "package" and not package_name:
+            result = {
+                "error": True,
+                "type": "MissingParameter",
+                "message": "query_type 'package' requires package_name",
+            }
+        else:
+            result = await query_package_history(package_name=package_name, limit=limit)
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     # Mirror management tool (consolidated)
@@ -1224,13 +1267,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         limit = arguments.get("limit", 10)
         auto_test = arguments.get("auto_test", False)
         
-        result = await optimize_mirrors(
-            action=action,
-            country=country,
-            mirror_url=mirror_url,
-            limit=limit,
-            auto_test=auto_test
-        )
+        # optimize_mirrors(action, baseurl) is all this server implements: map mirror_url
+        # onto baseurl and report arguments we cannot honour instead of raising TypeError.
+        unsupported = [
+            name
+            for name, value in (
+                ("country", country),
+                ("limit", limit if limit != 10 else None),
+                ("auto_test", auto_test),
+            )
+            if value
+        ]
+        if unsupported:
+            result = {
+                "error": True,
+                "type": "NotSupported",
+                "message": f"optimize_mirrors does not implement: {', '.join(unsupported)}",
+                "help_text": "Supported arguments: action (status/test/suggest/health) and mirror_url.",
+            }
+        else:
+            result = await optimize_mirrors(action, baseurl=mirror_url)
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     # Configuration tools
