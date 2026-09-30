@@ -226,5 +226,5 @@ class TestCommandExistence:
             assert check_command_exists("nonexistent_command_xyz") is False
 
     def test_check_command_exists_exception(self):
-        with patch("os.system", side_effect=Exception("Test error")):
+        with patch("shutil.which", side_effect=Exception("Test error")):
             assert check_command_exists("test") is False
