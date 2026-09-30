@@ -7,6 +7,7 @@ Provides platform detection, subprocess execution, and error handling.
 import asyncio
 import logging
 import os
+import shutil
 from typing import Optional, Dict, Any
 
 # Configure logging to stderr (STDIO server requirement)
@@ -311,7 +312,9 @@ def check_command_exists(command: str) -> bool:
         bool: True if command exists, False otherwise
     """
     try:
-        result = os.system(f"which {command} > /dev/null 2>&1")
-        return result == 0
+        # shutil.which is pure Python: it works on minimal images that ship no `which`
+        # binary, which previously made every guarded tool report CommandNotFound even
+        # though the command was present.
+        return shutil.which(command) is not None
     except Exception:
         return False
